@@ -222,6 +222,106 @@ Esse arquivos são os que interfaceiam diretamente com o hardware e é a partir 
     - O **I2C.h** e o **I2C.c** servem para fazer a configuração e interface com os componentes **I2C**. 
     - O **AUDIO.c** e o **AUDIO.h** usam as funções dos arquivos acima para facilitar e criar as funções que usaremos diretamente no nosso código. A partir deles configuraremos o hardware de audio.
 
+!!! Info
+    Talvez seja necessário verificar nos arquivos que vieram do projeto original, se os endereços de **SDRAM**, **AUDIO_IF**, e outros periféricos estão definidos corretamente, conforme apresentado no arquivo **system.h**.
+
+
+Para começar, importamos tudo o que é preciso e definimos o tamnho dos blocos associados 
+```c
+    #include <stdio.h>
+    #include "terasic_includes.h"
+    #include "AUDIO.h"
+    #include <math.h>
+
+
+    #define RECORD_BLOCK_SIZE   250    // ADC FIFO: 512 byte
+    #define PLAY_BLOCK_SIZE     250    // DAC FIFO: 512 byte
+```
+
+Depois entramos na função ==main==. Começamos declarando as variaveis a serem usadas, e tambem já usamos as funções dos arquivos de cima para configurar a interface.
+
+```c
+    alt_u32 *pBuf, *pPlaying, *pRecording, buf_sample_size, data, RecordLen;
+    int i = 0;
+    pBuf = (alt_u32 *)NEW_SDRAM_CONTROLLER_0_BASE;
+
+    printf("Hello from THE Nios II!\n\na\n");
+    alt_u16 ch_right, ch_left;
+
+    AUDIO_Init(); // Inicializa a interface
+    AUDIO_FifoClear(); // Limpa o Buffer do FIFO
+    AUDIO_InterfaceActive(FALSE); // Desabilita a interface para poder alterar configuração
+    AUDIO_SetInputSource(SOURCE_LINEIN); // seleciona o input
+    AUDIO_DacEnableSoftMute(TRUE); // muta para não dar picos no audio
+    AUDIO_MicMute(TRUE); // Muta a entrada que não vai usar
+    AUDIO_LineInMute(FALSE); // Deixa aberta aentrada a ser usada
+    AUDIO_SetLineInVol(0x17, 0x17); // Configura o volume de saída
+    AUDIO_SetSampleRate(RATE_ADC32K_DAC32K); // Configura o Sample rate a ser usado
+    AUDIO_DacEnableZeroCross(FALSE); 
+    AUDIO_SetLineOutVol(0x64, 0x7F); // max 7F, min: 30, 0x79: 0 db
+    AUDIO_DacEnableSoftMute(FALSE); // Desabilita o mute pós configuracao
+    AUDIO_FifoClear(); // Limpa o Buffer do FIFO
+    AUDIO_InterfaceActive(TRUE); // Ativa a interface
+
+    int idx_1,idx_2 = 0; // Index dentro da memoria
+    pRecording = pBuf; // espaco de memoria a receber a gravacao
+    pPlaying = pBuf; // Espaco da memoria a ser lido
+
+```
+
+Depois disso, entramos no loop que vai ficar rodando. Nele podemos verificar se tem dados de audio para puxar, e então enviar de volta para a saída esses dados.
+
+```c
+    if(AUDIO_AdcFifoNotEmpty()){ // verifica se tem informação de audio a ser lida
+        AUDIO_AdcFifoGetData(&ch_left, &ch_right); // le o audio
+    }
+
+    if (AUDIO_DacFifoNotFull()) { // verifica se pode escrever na entrada
+        AUDIO_DacFifoSetData(ch_right, ch_left); // envia o audio 
+    }
+        
+        
+```
+Nesse formato, os dados de audio vão passar diretamente pelo sistema, sem alterar. Nesse momento pode já tentar alterar o dado de áudio, caso a alteração seja feita em menos tempo que uma nova leitura. Se a alteração for muito devagar, dá para alterar o "sampleRate" do projeto nas configurações acima. Outra forma de trabalhar com o audio é salvar esse audio na memoria e processar ele com um certo delay. Para isso seria nescessario salvar essa informação na SDRAM, pois é a forma mais rapida de armazenar esses dados.
+
+```c
+if(AUDIO_AdcFifoNotEmpty()){ // verifica se tem informação de audio a ser lida
+    AUDIO_AdcFifoGetData(&ch_left, &ch_right); // le o audio
+    data = (ch_left << 16) | ch_right; // prepara para gravar
+    *pRecording++ = data; // grava e já ajusta para a proxima posição
+    idx_1++; // move o indice 1
+    if(idx_1>=RECORD_BLOCK_SIZE){ // caso termine o espaco de memoria, volte para o comeco e sobreescreve lá
+        idx_1 = 1;
+        pRecording = pBuf;
+    }
+}
+
+
+// Espaço de processamento do audio
+
+
+
+if(AUDIO_DacFifoNotFull() & (idx_1 > 0 & idx_1-idx_2 != 0)) // verifica se pode escrever na entrada e se já tem o que ler na memoria
+{
+    data = *pPlaying++; // le a memoria e prepara para proximo pedaco de memoria
+
+    ch_left = data >> 16; // separa os canais
+    ch_right = data & 0xFFFF;
+
+    AUDIO_DacFifoSetData(ch_right, ch_left); // envia o audio 
+
+    idx_2++; // atualiza o index do player
+    if(idx_2>=PLAY_BLOCK_SIZE){  // caso termine o espaco de memoria, volte para o comeco e lê de lá
+        idx_2 = 1;
+        pPlaying = pBuf;
+    }
+}
+```
+
+Assim salvamos esses dados na sdram, e podemos processar eles a parte, causando um pequeno atraso na saída do sinal.
+
+Abaixo segue o código completo.
+
 
 === "C"
 
@@ -235,7 +335,6 @@ Esse arquivos são os que interfaceiam diretamente com o hardware e é a partir 
 
     #define RECORD_BLOCK_SIZE   250    // ADC FIFO: 512 byte
     #define PLAY_BLOCK_SIZE     250    // DAC FIFO: 512 byte
-    #define MAX_TRY_CNT         1024
 
 
 
@@ -306,7 +405,3 @@ Esse arquivos são os que interfaceiam diretamente com o hardware e é a partir 
     }
 
     ```
-
-O código acima faz a configuração da placa, na primeira parte ele ajusta os a interface. Depois ele entra no loop, e pega do FIFO os arquivos de audio e salva na dram. Depois ele puxa de volta e retorna essa informação para o FIFO.
-
-Para desenvolver agora o audio, basta fazer essa alteração entre os dois 'ifs', onde está marcado como ==Espaço de processamento de audio==.
