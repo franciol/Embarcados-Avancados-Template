@@ -1,5 +1,4 @@
-# Coloque aqui o nome do tutorial de vocês
-
+# Processamento de Audio em tempo real
 - **Alunes:** Francisco Ciol R. Aveiro
 - **Curso:** Engenharia da Computação
 - **Semestre:** 9
